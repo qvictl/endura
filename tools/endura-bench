@@ -1,0 +1,26 @@
+#!/usr/bin/bash
+# Smoothness check: bursts of UI-like work started from idle.
+# Reference = loops/ms at full performance (EPP performance + boost), measured
+# once by install.sh into /var/lib/endura/burst_ref.
+set -euo pipefail
+REF=$(cat /var/lib/endura/burst_ref 2>/dev/null || echo 700000)
+OUT=$(/usr/libexec/endura/burst run "$REF" 25)
+echo "$OUT"
+p90_10=$(awk '/^10ms/{sub("p90=","",$3); sub("ms","",$3); print $3}' <<<"$OUT")
+p90_2=$(awk '/^2ms/{sub("p90=","",$3); sub("ms","",$3); print $3}' <<<"$OUT")
+ok=1
+awk "BEGIN{exit !($p90_10 <= 16.7)}" || ok=0
+awk "BEGIN{exit !($p90_2 <= 8.3)}" || ok=0
+C=/sys/devices/system/cpu/cpu0/cpufreq
+cur="EPP=$(cat $C/energy_performance_preference 2>/dev/null || echo n/a) max=$(( $(cat $C/scaling_max_freq)/1000 ))MHz"
+echo
+case "${LANG:-}${LC_ALL:-}" in
+zh*|*zh_*)
+  echo "标准: 10ms 任务 p90 ≤ 16.7ms（60Hz 一帧），2ms 任务 p90 ≤ 8.3ms（120Hz 一帧）"
+  [ $ok = 1 ] && echo "结果: 通过 ✅ (10ms→${p90_10}ms, 2ms→${p90_2}ms)" || echo "结果: 不通过 ❌ (10ms→${p90_10}ms, 2ms→${p90_2}ms)"
+  echo "当前: $cur" ;;
+*)
+  echo "Criterion: 10 ms task p90 <= 16.7 ms (one 60 Hz frame), 2 ms task p90 <= 8.3 ms (one 120 Hz frame)"
+  [ $ok = 1 ] && echo "Result: PASS (10ms->${p90_10}ms, 2ms->${p90_2}ms)" || echo "Result: FAIL (10ms->${p90_10}ms, 2ms->${p90_2}ms)"
+  echo "Current: $cur" ;;
+esac

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Endura
+GenericName=Battery tuning
+Name[zh_CN]=Endura 续航调优
+Comment=Toggle power-saving tweaks and watch power draw
+Exec=endura-gui
+Icon=battery-profile-powersave
+Categories=System;Settings;

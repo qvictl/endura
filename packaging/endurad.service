@@ -1,0 +1,13 @@
+[Unit]
+Description=Endura power tuning daemon
+After=multi-user.target power-profiles-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m endura.daemon
+Environment=PYTHONPATH=/usr/lib/endura
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

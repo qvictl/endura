@@ -1,0 +1,13 @@
+{
+    "KPlugin": {
+        "Name": "Endura focus relay",
+        "Description": "Tells endura-nap which window is active so napping apps wake instantly",
+        "Id": "endura-focus",
+        "License": "MIT",
+        "Version": "1.0",
+        "EnabledByDefault": true
+    },
+    "X-Plasma-API": "javascript",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "KPackageStructure": "KWin/Script"
+}

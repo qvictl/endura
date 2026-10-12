@@ -1,0 +1,15 @@
+[Unit]
+Description=Endura App Nap (duty-cycle background chat apps on battery)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m endura.nap
+# never leave an app frozen, even if the agent is killed
+ExecStopPost=/usr/bin/python3 -m endura.nap --thaw
+Environment=PYTHONPATH=/usr/lib/endura
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
