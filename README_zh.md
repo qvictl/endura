@@ -150,4 +150,4 @@ tier 1 失焦即节流，tier 2 只在 5 分钟无输入后节流。
 
 ## 许可证
 
-MIT。`third_party/tscsync/set-mode.sh` 来自 [tscsync](https://github.com/Zanasin/tscsync)（MIT）。
+MIT。`endura/data/tscsync/set-mode.sh` 来自 [tscsync](https://github.com/Zanasin/tscsync)（MIT）。

@@ -202,4 +202,4 @@ Evaluated and rejected: rebuilding the kernel for `CONFIG_RCU_LAZY` / the TEO id
 
 ## License
 
-MIT. `third_party/tscsync/set-mode.sh` is from [tscsync](https://github.com/Zanasin/tscsync) (MIT).
+MIT. `endura/data/tscsync/set-mode.sh` is from [tscsync](https://github.com/Zanasin/tscsync) (MIT).
