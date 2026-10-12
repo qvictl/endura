@@ -75,19 +75,31 @@ criterion, checked by `endura-bench`:
 
 ## Install
 
+From PyPI:
+
+```sh
+pipx install endura                # or: pip install --user endura
+sudo "$(which endura-install)"     # installs deps (dnf / apt / pacman), daemon, GUI
+endura-gui                         # or "Endura" in the application menu
+```
+
+From source:
+
 ```sh
 git clone https://github.com/qvictl/endura.git
 cd endura
-sudo ./install.sh          # installs deps (dnf / apt / pacman), daemon, GUI
-endura-gui                 # or "Endura" in the application menu
+sudo ./install.sh
 ```
+
+The system services run from a self-contained copy in `/usr/lib/endura` with the
+distribution's `/usr/bin/python3`, so they do not depend on where pip put the package.
 
 Most tweaks are on by default and apply only on battery. Reboot-scoped ones (TSC resync,
 PSR, stutter) are off until you enable them in the GUI. For the TSC fix, install
 [tscsync](https://github.com/Zanasin/tscsync) first — Endura only toggles it.
 
 ```sh
-sudo ./uninstall.sh        # reverts every tweak first, then removes Endura
+sudo "$(which endura-uninstall)"   # or ./uninstall.sh: reverts every tweak first, then removes Endura
 ```
 
 Every file a tweak modifies is backed up in `/var/lib/endura/backup`; module options go to a
@@ -118,6 +130,7 @@ unfocused, tier 2 only after 5 minutes without input.
 
 | Part | Runs as | Role |
 |---|---|---|
+| `endura-install` | root, once | copies the package to `/usr/lib/endura`, installs units, KWin script, desktop file |
 | `endurad` | root (systemd) | applies tweaks, follows AC/battery, telemetry in `/var/lib/endura/telemetry.db`, JSON API on `/run/endura/endura.sock` (group `wheel`), input-activity mark for App Nap |
 | `endura-nap` + KWin script `endura-focus` | user (systemd --user) | App Nap: freezes cgroups (`cgroup.freeze`), wakes on focus (KWin → D-Bus) or input (inotify on `/run/endura/input`) |
 | `endura-audio-gate` | user | silence detection with one low-rate `parec` monitor; park sink forced to a large quantum |

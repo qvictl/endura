@@ -67,18 +67,29 @@ Endura 由一个 root 守护进程、两个用户级代理和一个 PyQt6 图形
 
 ## 安装
 
+从 PyPI 安装：
+
+```sh
+pipx install endura                # 或 pip install --user endura
+sudo "$(which endura-install)"     # 安装依赖（dnf / apt / pacman）、守护进程和图形界面
+endura-gui                         # 或从应用菜单打开 "Endura"
+```
+
+从源码安装：
+
 ```sh
 git clone https://github.com/qvictl/endura.git
 cd endura
-sudo ./install.sh          # 安装依赖（dnf / apt / pacman）、守护进程和图形界面
-endura-gui                 # 或从应用菜单打开 "Endura"
+sudo ./install.sh
 ```
+
+系统服务运行在 `/usr/lib/endura` 下的独立副本上，使用发行版自带的 `/usr/bin/python3`，与 pip 把包装到哪里无关。
 
 大多数调优默认开启且只在用电池时生效。需要重启的项（TSC 同步、PSR、stutter）默认关闭，在 GUI 中开启。
 TSC 修复需先安装 [tscsync](https://github.com/Zanasin/tscsync)，Endura 只负责开关它。
 
 ```sh
-sudo ./uninstall.sh        # 先还原所有调优，再卸载
+sudo "$(which endura-uninstall)"   # 或 ./uninstall.sh：先还原所有调优，再卸载
 ```
 
 调优修改过的文件都备份在 `/var/lib/endura/backup`；内核模块参数写在独立的覆盖文件

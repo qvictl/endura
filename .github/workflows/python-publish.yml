@@ -1,0 +1,76 @@
+# Build on every push/PR; on a published GitHub release, attach the sdist and
+# wheel to the release and upload them to PyPI via Trusted Publishing.
+name: Python package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Smoke test the wheel
+        run: |
+          python -m pip install dist/*.whl
+          python -c "import endura, endura.tweaks, endura.defaults, endura.installer; print(endura.__version__)"
+          python - <<'PY'
+          import importlib.resources as r
+          d = r.files("endura") / "data"
+          for p in ("packaging/endurad.service", "kwin/endura-focus/metadata.json",
+                    "tools/burst.c", "tscsync/set-mode.sh"):
+              assert (d / p).is_file(), p
+          assert (r.files("endura") / "plasma" / "hide.js").is_file()
+          print("package data ok")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  release-assets:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --repo "${{ github.repository }}" --clobber
+
+  pypi:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/endura/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
