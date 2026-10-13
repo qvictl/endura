@@ -84,8 +84,10 @@ def user_cmd(args):
         home = pwd.getpwnam(user).pw_dir
     except KeyError:
         home = f"/home/{user}"
-    return ["setpriv", f"--reuid={uid}", f"--regid={uid}", "--init-groups",
-            "env", f"HOME={home}", f"USER={user}", *env, *args]
+    if shutil.which("setpriv"):
+        return ["setpriv", f"--reuid={uid}", f"--regid={uid}", "--init-groups",
+                "env", f"HOME={home}", f"USER={user}", *env, *args]
+    return ["runuser", "-u", user, "--", "env", f"HOME={home}", *env, *args]
 
 
 class ManagedFile:

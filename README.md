@@ -73,6 +73,27 @@ criterion, checked by `endura-bench`:
   on Wayland (focus tracking for App Nap, panel monitor hiding). Generic tweaks work on Intel
   and other desktops; tweaks whose hardware is missing show as *not available*.
 
+## Tested distributions
+
+`endura-install` resolves dependencies per distribution, installs what is packaged, vendors
+the rest into `/usr/lib/endura/vendor` (pulsectl; PyQt6 from PyPI where the distro has none),
+and disables a feature instead of failing if something is still missing. Verified in clean
+containers (dependency installation and imports for `/usr/bin/python3`):
+
+| Distribution | Python | Result | Notes |
+|---|---|---|---|
+| Fedora 43 | 3.14 | ✅ | reference machine, full feature set verified on hardware |
+| Ubuntu 24.04 | 3.12 | ✅ | |
+| Ubuntu 22.04 | 3.10 | ✅ | no `python3-pyqt6` in the archive → PyQt6 wheel vendored |
+| Debian 12 | 3.11 | ✅ | |
+| Arch Linux | 3.14 | ✅ | `pulsectl` is AUR-only → vendored |
+| openSUSE Tumbleweed | 3.13 | ✅ | via zypper |
+
+The GUI connects to the daemon as the desktop session's user or any `wheel`/`sudo`/`admin`
+member (checked with `SO_PEERCRED`), so no group setup is needed. KDE-specific parts (App Nap
+focus tracking, hiding panel monitors) are skipped elsewhere; on other desktops App Nap naps
+apps only when there is no keyboard/mouse input.
+
 ## Install
 
 From PyPI:
@@ -202,4 +223,4 @@ Evaluated and rejected: rebuilding the kernel for `CONFIG_RCU_LAZY` / the TEO id
 
 ## License
 
-MIT. `endura/data/tscsync/set-mode.sh` is from [tscsync](https://github.com/Zanasin/tscsync) (MIT).
+MIT. `third_party/tscsync/set-mode.sh` is from [tscsync](https://github.com/Zanasin/tscsync) (MIT).

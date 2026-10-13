@@ -61,6 +61,21 @@ class Tweak:
         return d
 
 
+_IMPORT_CACHE = {}
+
+
+def system_importable(*mods):
+    """Can the system python (what the user services run with) import these?"""
+    key = mods
+    if key not in _IMPORT_CACHE:
+        code = "; ".join(f"import {m}" for m in mods)
+        env = dict(os.environ, PYTHONPATH="/usr/lib/endura:/usr/lib/endura/vendor")
+        import subprocess
+        _IMPORT_CACHE[key] = subprocess.run(["/usr/bin/python3", "-c", code], env=env,
+                                            capture_output=True).returncode == 0
+    return _IMPORT_CACHE[key]
+
+
 def user_home():
     user, _ = desktop_user()
     if not user:
@@ -419,7 +434,7 @@ class PanelMonitorsOnBattery(Tweak):
         return run(["pgrep", "-x", "plasmashell"])[0] == 0
 
     def _run(self, action):
-        c = user_cmd(["env", "PYTHONPATH=/usr/lib/endura", "python3", "-m", "endura.panel", action])
+        c = user_cmd(["env", "PYTHONPATH=/usr/lib/endura:/usr/lib/endura/vendor", "python3", "-m", "endura.panel", action])
         return run(c, timeout=90) if c else (1, "no desktop user")
 
     def ensure(self, on_battery):
@@ -887,7 +902,7 @@ class AudioGate(UserService):
     risk = T("After long silence the first ~0.2 s of sound may be lost.", "长时间静音后恢复播放时，开头约 0.2 秒可能被吞。")
 
     def available(self):
-        return run(["sh", "-c", "command -v parec"])[0] == 0
+        return run(["sh", "-c", "command -v parec"])[0] == 0 and system_importable("pulsectl")
 
 
 class AppNap(UserService):
@@ -907,7 +922,7 @@ class AppNap(UserService):
              "while you are away.", "后台消息最多晚约 2 秒（离开 5 分钟后约 9 秒）；离开期间后台下载变慢。")
 
     def available(self):
-        return os.path.exists("/sys/fs/cgroup/cgroup.controllers")
+        return os.path.exists("/sys/fs/cgroup/cgroup.controllers") and system_importable("dbus", "gi")
 
     def ensure(self, on_battery):
         if run(["pgrep", "-x", "kwin_wayland"])[0] == 0:

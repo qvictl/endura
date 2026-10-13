@@ -103,6 +103,7 @@ class Nap(dbus.service.Object):
         super().__init__(bus, "/io/github/Endura/Nap")
         self.session = dbus.SessionBus()
         self.focused = None
+        self.focus_known = False   # becomes True once a focus relay (KWin script) reports
         self.last_focus = {a: time.monotonic() for a in APPS}
         self.frozen = set()
         self.napping = set()
@@ -118,6 +119,7 @@ class Nap(dbus.service.Object):
 
     @dbus.service.method(BUS, in_signature="is", out_signature="")
     def Focus(self, pid, cls):
+        self.focus_known = True
         app = app_of_pid(int(pid)) if pid else None
         if app is None:
             low = str(cls).lower()
@@ -163,7 +165,8 @@ class Nap(dbus.service.Object):
         if self.locked():
             return
         for app in list(self.napping):
-            if app == self.focused or APPS[app].get("tier", 1) == 2 or app in self.deep:
+            if (app == self.focused or not self.focus_known
+                    or APPS[app].get("tier", 1) == 2 or app in self.deep):
                 self.wake(app, "input")
 
     def reevaluate(self):
@@ -174,9 +177,13 @@ class Nap(dbus.service.Object):
         idle = self.idle_seconds() if bat else 0.0
         deep_idle = locked or idle > DEEP_IDLE
         for app, a in APPS.items():
-            unfocused = app != self.focused and now - self.last_focus[app] > UNFOCUSED_GRACE
+            # without a focus relay (non-KDE desktops) we cannot tell which app is in
+            # front, so tier-1 apps nap only on input idleness, never "unfocused"
+            unfocused = (self.focus_known and app != self.focused
+                         and now - self.last_focus[app] > UNFOCUSED_GRACE)
             if a.get("tier", 1) == 1:
-                cond = unfocused or (app == self.focused and (locked or idle > IDLE_NAP))
+                cond = unfocused or ((app == self.focused or not self.focus_known)
+                                     and (locked or idle > IDLE_NAP))
             else:
                 cond = deep_idle
             want = bat and app not in self.busy and bool(app_cgroups(app)) and cond

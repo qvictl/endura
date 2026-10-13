@@ -65,6 +65,25 @@ Endura 由一个 root 守护进程、两个用户级代理和一个 PyQt6 图形
 * 支持最完整：AMD Ryzen APU（SoC 功耗遥测、amdgpu PSR、TSC 修复）和 KDE Plasma 6 Wayland
   （App Nap 的焦点跟踪、隐藏面板监视器）。通用项在 Intel 和其他桌面同样可用；硬件不具备的项会显示为"不可用"。
 
+## 已实测的发行版
+
+`endura-install` 按发行版解析依赖：能用系统包的用系统包，系统没有的装进 `/usr/lib/endura/vendor`
+（pulsectl；发行版没有 PyQt6 时用 PyPI 版本），仍缺的依赖只会禁用对应功能而不是安装失败。
+在全新容器中验证了依赖安装和 `/usr/bin/python3` 的导入：
+
+| 发行版 | Python | 结果 | 说明 |
+|---|---|---|---|
+| Fedora 43 | 3.14 | ✅ | 参考机，全部功能在真机上验证 |
+| Ubuntu 24.04 | 3.12 | ✅ | |
+| Ubuntu 22.04 | 3.10 | ✅ | 源里没有 `python3-pyqt6` → 自动使用 PyPI 版 PyQt6 |
+| Debian 12 | 3.11 | ✅ | |
+| Arch Linux | 3.14 | ✅ | `pulsectl` 只在 AUR → 自动装入私有目录 |
+| openSUSE Tumbleweed | 3.13 | ✅ | 通过 zypper |
+
+GUI 以当前桌面会话用户或 `wheel`/`sudo`/`admin` 组成员身份连接守护进程（通过 `SO_PEERCRED` 校验），
+无需配置用户组。KDE 专属部分（App Nap 焦点跟踪、隐藏面板监视器）在其他桌面上自动跳过；
+非 KDE 桌面上 App Nap 只在没有键鼠输入时节流。
+
 ## 安装
 
 从 PyPI 安装：
@@ -150,4 +169,4 @@ tier 1 失焦即节流，tier 2 只在 5 分钟无输入后节流。
 
 ## 许可证
 
-MIT。`endura/data/tscsync/set-mode.sh` 来自 [tscsync](https://github.com/Zanasin/tscsync)（MIT）。
+MIT。`third_party/tscsync/set-mode.sh` 来自 [tscsync](https://github.com/Zanasin/tscsync)（MIT）。

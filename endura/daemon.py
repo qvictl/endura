@@ -224,17 +224,42 @@ class Daemon:
         SOCK.unlink(missing_ok=True)
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.bind(str(SOCK))
-        try:
-            os.chown(SOCK, 0, grp.getgrnam("wheel").gr_gid)
-        except KeyError:
-            pass
-        os.chmod(SOCK, 0o660)
+        # world-connectable; every connection is authorised by peer credentials
+        os.chmod(SOCK, 0o666)
         s.listen(8)
         while self.running:
             conn, _ = s.accept()
             threading.Thread(target=self._client, args=(conn,), daemon=True).start()
 
+    ADMIN_GROUPS = ("wheel", "sudo", "admin")
+
+    def authorised(self, conn):
+        """root, the user of the graphical seat0 session, or an admin-group member."""
+        import struct
+        from .util import desktop_user
+        pid, uid, gid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                            struct.calcsize("3i")))
+        if uid == 0 or uid == desktop_user()[1]:
+            return True
+        try:
+            import pwd
+            name = pwd.getpwuid(uid).pw_name
+        except KeyError:
+            return False
+        for g in self.ADMIN_GROUPS:
+            try:
+                gr = grp.getgrnam(g)
+            except KeyError:
+                continue
+            if name in gr.gr_mem or gid == gr.gr_gid:
+                return True
+        return False
+
     def _client(self, conn):
+        if not self.authorised(conn):
+            with conn:
+                conn.sendall(b'{"error": "not authorised: run the GUI as the desktop user or an admin"}\n')
+            return
         with conn, conn.makefile("rwb") as f:
             for line in f:
                 try:
