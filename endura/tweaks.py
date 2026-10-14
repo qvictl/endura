@@ -13,6 +13,8 @@ import json
 import os
 import pwd
 import re
+import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -887,50 +889,99 @@ class BackgroundTimerSlack(Tweak):
 
 
 class BusyLoopWatchdog(Tweak):
-    """Some apps fall into a state where they wake thousands of times a second
-    (seen: Feishu's backend, ~3000 wakeups/s, ~4 W). Notify, never kill."""
+    """Notify (never kill) when an app suddenly burns power: its estimated
+    watts, or its wakeup rate (seen: Feishu's backend stuck at ~3000
+    wakeups/s, ~4 W), stays above a threshold for a few minutes."""
     id = "busy_watchdog"
-    title = T("Busy-loop watchdog", "忙等进程监控")
-    desc = T("Notifies when an app keeps waking the CPU more than {thr} times a second for 3 minutes "
-             "(seen: a Feishu backend stuck at ~3000/s cost ~4 W; restarting it fixed it).",
-             "某个应用持续 3 分钟每秒唤醒超过 {thr} 次时弹出通知（曾见飞书后台卡在约 3000 次/秒，多耗约 4W，重启即恢复）。")
+    title = T("Runaway app alerts", "高耗电应用提醒")
+    desc = T("Notifies, with the app's estimated power draw, when an app stays above {w:g} W or wakes the "
+             "CPU more than {thr} times a second for {m} minutes (on battery only, unless changed). Thresholds are in Settings; the "
+             "notification can mute that app. Seen: a Feishu backend stuck at ~3000 wakeups/s cost ~4 W, "
+             "restarting it fixed it.",
+             "某个应用持续 {m} 分钟估算功耗超过 {w:g}W，或每秒唤醒 CPU 超过 {thr} 次时弹出通知（默认仅电池模式），并附上它当前的估算功耗。"
+             "阈值可在“设置”页修改，通知里可以对该应用静音。曾见飞书后台卡在约 3000 次/秒，多耗约 4W，重启即恢复。")
     group = "apps"
     default = True
-    THRESHOLD = 1500
+    IGNORE = {"kernel", "", "init", "endurad", "systemd", "user"}
+    REARM_S = 3600          # one notification per app per hour at most
 
     def __init__(self, opts=None):
         super().__init__(opts)
         self.recorder = None
-        self.hot_since, self.notified = {}, set()
+        self.on_mute = None          # callback(app) set by the daemon
+        self.hot_since, self.last_notified = {}, {}
         self.alerts = {}
 
+    def _o(self, k, default):
+        try:
+            return type(default)(self.opts.get(k, default))
+        except (TypeError, ValueError):
+            return default
+
     def fmt(self):
-        return {"thr": self.THRESHOLD}
+        return {"thr": self._o("alert_wakeups", 1500), "w": self._o("alert_app_w", 3.0),
+                "m": self._o("alert_minutes", 5)}
 
     def ensure(self, on_battery):
-        rates = getattr(self.recorder, "wake_rate", {}) or {}
+        rec = self.recorder
+        wakes = getattr(rec, "wake_rate", {}) or {}
+        watts = getattr(rec, "app_w", {}) or {}
+        thr_w, thr_k = self._o("alert_app_w", 3.0), self._o("alert_wakeups", 1500)
+        hold = 60 * self._o("alert_minutes", 5)
+        ignore = self.IGNORE | set(self.opts.get("alert_ignore") or [])
         now = time.monotonic()
-        ignore = {"kernel", "", "init", "endurad"}
-        self.alerts = {k: v for k, v in rates.items() if v > self.THRESHOLD and k not in ignore}
+        hot = {}
+        for k in set(wakes) | set(watts):
+            if k in ignore:
+                continue
+            w, r = watts.get(k, 0.0), wakes.get(k, 0.0)
+            if (thr_w > 0 and w > thr_w) or (thr_k > 0 and r > thr_k):
+                hot[k] = (w, r)
+        self.alerts = hot
         for k in list(self.hot_since):
-            if k not in self.alerts:
+            if k not in hot:
                 self.hot_since.pop(k)
-                self.notified.discard(k)
-        for k, v in self.alerts.items():
-            self.hot_since.setdefault(k, now)
-            if now - self.hot_since[k] > 180 and k not in self.notified:
-                c = user_cmd(["notify-send", "-a", "Endura", "-i", "battery-caution",
-                              f"{k}: {v:.0f} wakeups/s",
-                              "This app keeps the CPU awake; restarting it usually helps. / "
-                              "该应用持续唤醒 CPU，重启它通常可以恢复。"])
-                c and run(c)
-                self.notified.add(k)
+        if not on_battery and not self._o("alert_on_ac", False):
+            return
+        for k, (w, r) in hot.items():
+            since = self.hot_since.setdefault(k, now)
+            if now - since >= hold and now - self.last_notified.get(k, -1e9) >= self.REARM_S:
+                self.last_notified[k] = now
+                self.notify(k, w, r, (now - since) / 60)
+
+    def notify(self, app, w, r, minutes):
+        from .i18n import tr
+        last = getattr(self.recorder, "last", {}) or {}
+        total = last.get("bat_w") or last.get("sock_w")
+        cpu = (last.get("apps") or {}).get(app, 0.0)
+        title = tr(T("{a} is using ≈ {w:.1f} W", "{a} 正在耗电 ≈ {w:.1f}W"), a=app, w=w)
+        body = [tr(T("For {m:.0f} min: CPU {c:.0f}% of a core, {r:.0f} wakeups/s.",
+                     "已持续 {m:.0f} 分钟：CPU 占单核 {c:.0f}%，每秒唤醒 {r:.0f} 次。"), m=minutes, c=cpu, r=r)]
+        if total:
+            body.append(tr(T("That is about {p:.0f}% of the current {t:.1f} W draw.",
+                             "约占当前整机 {t:.1f}W 的 {p:.0f}%。"), p=100 * w / total, t=total))
+        body.append(tr(T("If you are not using it, quitting or restarting it usually helps.",
+                         "如果没在用它，退出或重启通常可以恢复。")))
+        c = user_cmd(["notify-send", "-a", "Endura", "-i", "battery-caution",
+                      f"--action=mute={tr(T('Never alert for this app', '不再提醒此应用'))}",
+                      title, " ".join(body)])
+        if not c:
+            return
+
+        def wait():    # --action blocks until the notification is closed
+            try:
+                out = subprocess.run(c, capture_output=True, text=True, timeout=6 * 3600).stdout
+            except (OSError, subprocess.SubprocessError):
+                return
+            if out.strip() == "mute" and self.on_mute:
+                self.on_mute(app)
+        threading.Thread(target=wait, daemon=True).start()
 
     def status(self):
         if not self.alerts:
             return {"active": True, "pending_reboot": False, "detail": "ok"}
         return {"active": True, "pending_reboot": False, "alert": True,
-                "detail": "; ".join(f"{k}: {v:.0f}/s" for k, v in self.alerts.items())}
+                "detail": "; ".join(f"{k}: ≈{w:.1f} W, {r:.0f}/s" for k, (w, r) in self.alerts.items())}
 
 
 class UserService(Tweak):

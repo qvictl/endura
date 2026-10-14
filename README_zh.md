@@ -28,7 +28,7 @@ Endura 由一个 root 守护进程、两个用户级代理和一个 PyQt6 图形
 | **合并磁盘写入**（电池） | btrfs/ext4 `commit=120,noatime`、脏页 60 秒过期（运行时重挂载，不改 fstab） | NVMe 写入 3443→1541 次/分钟 |
 | **Chromium 系浏览器硬件视频解码** | 给 Chrome / Chromium / Edge / Brave 的启动项（用户级 desktop 覆盖文件 + `*-flags.conf`）加上 VA-API 开关；只在 GPU 上 VA-API 能真正初始化时才启用 | 电池、30% 亮度播放 YouTube 1080p：**17.8→10.0W**（SoC 10.6→5.1W） |
 | **插电静音 / 低温模式** | 插电时：固件 low-power 档、响应式 EPP 并关睿频，App Nap / timer slack / 设备省电继续开启，支持的机型风扇设为超静音 | 轻负载温度峰值对比常见的 balanced+睿频：55.8→42°C；8 线程×50% 持续 5 分钟：最高 56.8°C，风扇全程未启动；UI 突发响应反而更快（10ms 任务 p90 14~15ms 对比 22~25ms） |
-| **忙等进程监控** | 应用持续 3 分钟每秒唤醒超过 1500 次时通知 | 抓到某聊天应用后台约 3000 次/秒唤醒，多耗 **约 4W** |
+| **高耗电应用提醒** | 应用持续 5 分钟估算功耗超过 3W 或每秒唤醒超过 1500 次时通知，并附上它的估算功耗（阈值可调，通知上可直接静音该应用） | 抓到某聊天应用后台约 3000 次/秒唤醒，多耗 **约 4W** |
 | **崩溃循环守卫** | 停掉 10 分钟内重启超过 20 次的服务 | 抓到一个 npm 依赖缺失的更新器，已重启 1286 次 |
 | **厂商服务修复** | 声明 `Type=forking` 却从不 fork 的服务（启动超时→无限重启） | 某远控守护进程已重启 113 次 |
 | PCI 运行时电源管理、ASPM `powersupersave`、关 NMI watchdog、精简后台服务、浏览器省电策略 | 常规项 | 收益小，但没有代价 |
@@ -118,7 +118,9 @@ sudo "$(which endura-uninstall)"   # 或 ./uninstall.sh：先还原所有调优�
 
 ## 配置
 
-`/etc/endura/config.json` 示例见英文 README；全部键和默认值见 [`endura/defaults.py`](endura/defaults.py)。
+GUI 的 **设置** 页包含常用选项：电池功耗预算（按瓦数，或按满电续航小时数设置，显示为曲线上的虚线）、
+电池模式 CPU 选项、高耗电应用提醒的阈值和静音列表、界面语言。所有设置都保存在 `/etc/endura/config.json`，
+也可以手动编辑，示例见英文 README；全部键和默认值见 [`endura/defaults.py`](endura/defaults.py)。
 `nap_apps` 按应用的 systemd cgroup 匹配（flatpak scope、KDE/GNOME 的 `app-*.service`）；
 tier 1 失焦即节流，tier 2 只在 5 分钟无输入后节流。
 

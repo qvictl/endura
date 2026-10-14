@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from . import tweaks as T
+from .i18n import set_lang
 from .telemetry import Recorder
 from .util import CONFIG_PATH, on_battery, run
 
@@ -26,8 +27,10 @@ class Daemon:
         self.cfg = self.load_cfg()
         self.tweaks = T.build(self.cfg["options"])
         self.rec = Recorder()
+        set_lang(self.cfg["options"].get("language"))
         if "busy_watchdog" in self.tweaks:
             self.tweaks["busy_watchdog"].recorder = self.rec
+            self.tweaks["busy_watchdog"].on_mute = self.mute_app
         self.running = True
         self.last_bat = None
         self.errors = {}
@@ -119,11 +122,39 @@ class Daemon:
         if tid == "ac_quiet":
             self.apply_all(force=True)     # re-evaluate every quiet-capable tweak
 
+    # options a GUI client may change, with their validators
+    SETTABLE = {
+        "battery_epp": lambda v: v if v in ("power", "balance_power", "balance_performance", "performance") else None,
+        "battery_boost": bool,
+        "abm_level": lambda v: min(4, max(1, int(v))),
+        "language": lambda v: v if v in ("auto", "en", "zh") else None,
+        "budget_w": lambda v: min(200.0, max(0.0, round(float(v), 2))),
+        "alert_app_w": lambda v: min(100.0, max(0.0, round(float(v), 2))),
+        "alert_minutes": lambda v: min(120, max(1, int(v))),
+        "alert_wakeups": lambda v: min(100000, max(0, int(v))),
+        "alert_on_ac": bool,
+        "alert_ignore": lambda v: sorted({str(x).strip()[:128] for x in v if str(x).strip()})[:200],
+    }
+
     def set_option(self, key, value):
+        if key not in self.SETTABLE:
+            raise ValueError(f"option {key!r} cannot be changed here")
+        value = self.SETTABLE[key](value)
+        if value is None:
+            raise ValueError(f"bad value for {key}")
         with self.lock:
             self.cfg["options"][key] = value
             self.save_cfg()
+        if key == "language":
+            set_lang(value)
+        self.status_cache.clear()
         self.apply_all()
+
+    def mute_app(self, app):
+        """'Never alert for this app' clicked in a notification."""
+        cur = list(self.cfg["options"].get("alert_ignore") or [])
+        if app not in cur:
+            self.set_option("alert_ignore", cur + [app])
 
     # ----------------------------------------------------------- probe --
     def app_cgroups(self, name):
@@ -199,7 +230,7 @@ class Daemon:
             if t.id in self.errors:
                 d["error"] = self.errors[t.id]
             out.append(d)
-        opts = {k: self.cfg["options"].get(k) for k in ("battery_epp", "battery_boost", "abm_level")}
+        opts = {k: self.cfg["options"].get(k) for k in self.SETTABLE}
         return {"tweaks": out, "options": opts, "now": self.rec.last}
 
     def is_available(self, t, ttl=300):
@@ -231,7 +262,10 @@ class Daemon:
             self.set_enabled(req["id"], req["enabled"])
             return self.status()
         if op == "option":
-            self.set_option(req["key"], req["value"])
+            try:
+                self.set_option(req["key"], req["value"])
+            except (ValueError, TypeError) as e:
+                return {"error": str(e)}
             return self.status()
         if op == "history":
             return {"history": self.rec.history(req.get("seconds", 3600))}

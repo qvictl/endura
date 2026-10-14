@@ -1,6 +1,16 @@
 """Default options. Override any key in /etc/endura/config.json under "options"."""
 
 OPTIONS = {
+    # user-interface language: "auto" follows the locale, or "en" / "zh"
+    "language": "auto",
+    # battery power budget in W; 0 = full battery capacity / 10 h
+    "budget_w": 0,
+    # runaway-app alerts (busy_watchdog)
+    "alert_app_w": 3.0,          # an app's estimated power above this ...
+    "alert_minutes": 5,          # ... for this long triggers a notification
+    "alert_wakeups": 1500,       # or more wakeups per second than this
+    "alert_on_ac": False,        # also alert while on AC power
+    "alert_ignore": [],          # app names never alerted about
     "battery_epp": "balance_performance",
     "battery_boost": False,
     "abm_level": 1,

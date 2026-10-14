@@ -129,6 +129,8 @@ class Recorder:
         self.last = {}
         self.prev_wake = (time.monotonic(), wakeups_by_app())
         self.wake_rate = {}
+        self.app_w = {}          # app -> smoothed estimated W (see flush)
+        self._floor = {}         # column -> (monotonic ts, W)
 
     def tick_fast(self):
         """Called every 5 s. Each battery read is an ACPI EC query, so read
@@ -163,16 +165,51 @@ class Recorder:
         soc = avg([x[1] for x in socs if x[1] is not None])
         gfx = avg([x[2] for x in socs if x[2] is not None])
         self.bat_acc, self.soc_acc = [], []
+        self.update_app_w(app_pct, sock, bat_w if on_bat else None)
         ts = time.time()
         self.last = {"ts": ts, "on_battery": on_bat, "bat_w": bat_w, "sock_w": sock,
                      "soc_w": soc, "gfx_w": gfx, "cpu_pct": busy, "battery": b,
-                     "apps": dict(sorted(app_pct.items(), key=lambda kv: -kv[1])[:25])}
+                     "apps": dict(sorted(app_pct.items(), key=lambda kv: -kv[1])[:25]),
+                     "app_w": {k: round(v, 2) for k, v in
+                               sorted(self.app_w.items(), key=lambda kv: -kv[1])[:25]}}
         self.db.execute("INSERT OR REPLACE INTO sample VALUES(?,?,?,?,?,?,?,?,?)",
                         (ts, on_bat, bat_w, sock, soc, gfx, busy, b["pct"], profile))
         self.db.executemany("INSERT INTO app VALUES(?,?,?)",
                             [(ts, k, round(v, 2)) for k, v in app_pct.items() if v >= 0.2])
         self.maybe_commit(ts)
         return self.last
+
+    def idle_floor(self, col="sock_w"):
+        """Power with nothing running: 5th percentile of the last day's samples
+        (socket power, or battery power on hardware without SMU metrics).
+        Refreshed every 10 min; ~2 W socket floor until there is enough data."""
+        ts, w = self._floor.get(col, (0, None))
+        if w is not None and time.monotonic() - ts < 600:
+            return w
+        cond = "" if col == "sock_w" else "AND on_bat=1"
+        xs = [r[0] for r in self.db.execute(
+            f"SELECT {col} FROM sample WHERE ts>=? AND {col} IS NOT NULL {cond} ORDER BY {col}",
+            (time.time() - 86400,))]
+        w = xs[len(xs) // 20] if len(xs) >= 60 else (2.0 if col == "sock_w" else None)
+        self._floor[col] = (time.monotonic(), w)
+        return w
+
+    def update_app_w(self, app_pct, sock, bat):
+        """Estimated W per app: power above the idle floor split by each app's
+        share of CPU time, smoothed over ~1 min. Coarse (GPU work and wakeup
+        costs are not attributed separately) but good enough to spot an app
+        that suddenly burns watts."""
+        col, src = ("sock_w", sock) if sock is not None else ("bat_w", bat)
+        floor = self.idle_floor(col) if src is not None else None
+        total = sum(app_pct.values())
+        if floor is None or total <= 0:
+            self.app_w = {}
+            return
+        dyn = max(0.0, src - floor)
+        a = 0.3
+        new = {k: dyn * v / total for k, v in app_pct.items()}
+        out = {k: a * new.get(k, 0.0) + (1 - a) * self.app_w.get(k, 0.0) for k in set(new) | set(self.app_w)}
+        self.app_w = {k: v for k, v in out.items() if v >= 0.01}
 
     def maybe_commit(self, ts, force=False):
         """Commit at most every 5 min so the SSD is not woken every 5 s."""
@@ -223,7 +260,8 @@ class Recorder:
         wk = dict(self.db.execute(
             "SELECT name, AVG(per_s) FROM wake WHERE ts>=? GROUP BY name", (since,)).fetchall())
         total = sum(r[1] for r in rows) or 1
-        dyn = max(0.0, (sock or 0) - 2.0)  # ~2 W socket floor when idle
+        floor = self.idle_floor() or 2.0
+        dyn = max(0.0, (sock or 0) - floor)
         apps = sorted(({"name": r[0], "cpu_pct": r[1] / count, "wakeups": wk.get(r[0], 0.0),
                         "est_w": dyn * r[1] / total} for r in rows), key=lambda a: -a["cpu_pct"])
-        return {"samples": count, "avg_bat_w": bat, "avg_sock_w": sock, "apps": apps[:30]}
+        return {"samples": count, "avg_bat_w": bat, "avg_sock_w": sock, "floor_w": floor, "apps": apps[:30]}

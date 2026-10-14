@@ -1,8 +1,18 @@
 """Minimal i18n: tweak texts are {"en": ..., "zh": ...} dicts; tr() picks one."""
 import os
 
+_override = None
+
+
+def set_lang(code):
+    """'en' / 'zh' force a language; 'auto' (or anything else) follows the locale."""
+    global _override
+    _override = code if code in ("en", "zh") else None
+
 
 def lang():
+    if _override:
+        return _override
     for v in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):
         x = os.environ.get(v, "")
         if x:

@@ -31,7 +31,7 @@ at **4.4 W with the screen on at 30 %** (≈ 22 h on its 99 Wh battery) while st
 | **Coalesce disk writes** (battery) | btrfs/ext4 `commit=120,noatime`, 60 s dirty expiry (runtime remount, fstab untouched) | NVMe writes 3443 → 1541 per minute |
 | **Hardware video decoding in Chromium browsers** | adds the VA-API switches to Chrome / Chromium / Edge / Brave launchers (user desktop-file overrides + `*-flags.conf`), only when VA-API actually initialises on the GPU | YouTube 1080p on battery, 30 % brightness: **17.8 → 10.0 W** (SoC 10.6 → 5.1 W) |
 | **Quiet & cool mode on AC** | on AC: firmware low-power profile, responsive EPP with boost off, App Nap / timer slack / device PM kept on, ideapad fan "super silent" where available | light load: peak 55.8 → 42 °C vs. a typical balanced+boost setup; 8 threads × 50 % for 5 min: max 56.8 °C, fan never started; UI bursts *faster* than balanced+boost (10 ms task p90 14–15 ms vs 22–25 ms) |
-| **Busy-loop watchdog** | notifies when an app wakes the CPU >1500×/s for 3 min | caught a chat-app backend at ~3000 wakeups/s costing **~4 W** |
+| **Runaway app alerts** | notifies, with the app's estimated watts, when an app stays above 3 W or 1500 wakeups/s for 5 min (thresholds configurable; the notification can mute the app) | caught a chat-app backend at ~3000 wakeups/s costing **~4 W** |
 | **Crash-loop guard** | stops services restarting >20× in 10 min | caught an updater with a broken npm dependency after 1286 restarts |
 | **Vendor unit fix** | units declared `Type=forking` that never fork (start timeout → restart forever) | a remote-desktop daemon had restarted 113× |
 | PCI runtime PM, ASPM `powersupersave`, NMI watchdog off, trim idle services, browser energy saver policy | the usual suspects | small, kept because they are free |
@@ -130,13 +130,19 @@ separate override (`/etc/modprobe.d/zz-endura-amdgpu.conf`) instead of editing y
 
 ## Configuration
 
-`/etc/endura/config.json`:
+The GUI's **Settings** tab covers the everyday options: the battery power budget (in W, or as
+a battery-life target in hours; drawn as the dashed line on the graph), the battery CPU
+options, runaway-app alert thresholds and mute list, and the interface language. Everything is
+stored in `/etc/endura/config.json`, which can also be edited by hand:
 
 ```json
 {
   "enabled": {"app_nap": true, "amdgpu_psr": true},
   "options": {
     "battery_epp": "balance_performance",
+    "budget_w": 6.6,
+    "language": "zh",
+    "alert_app_w": 3.0, "alert_minutes": 5, "alert_wakeups": 1500, "alert_ignore": ["steam"],
     "slack_deep": ["sunloginclient", "ToDesk_Service"],
     "nap_apps": {
       "com.slack.Slack": {"globs": ["app-flatpak-com.slack.Slack-*.scope"], "cls": ["slack"], "tier": 1}
