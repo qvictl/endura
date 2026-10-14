@@ -1051,6 +1051,165 @@ class CrashLoopGuard(Tweak):
                 "detail": "stopped: " + "; ".join(f"{u} ({r})" for (_, u), r in self.stopped.items())}
 
 
+def vaapi_usable():
+    """Initialise VA-API on the first render node with ctypes (what browsers do).
+    True only when a real hardware driver loads: Mesa radeonsi, Intel iHD/i965..."""
+    import ctypes
+    import ctypes.util
+    try:
+        va = ctypes.CDLL(ctypes.util.find_library("va") or "libva.so.2")
+        vadrm = ctypes.CDLL(ctypes.util.find_library("va-drm") or "libva-drm.so.2")
+    except OSError:
+        return False
+    for node in sorted(glob.glob("/dev/dri/renderD*")):
+        try:
+            fd = os.open(node, os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            vadrm.vaGetDisplayDRM.restype = ctypes.c_void_p
+            dpy = vadrm.vaGetDisplayDRM(fd)
+            if not dpy:
+                continue
+            va.vaInitialize.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+            va.vaQueryVendorString.restype = ctypes.c_char_p
+            va.vaQueryVendorString.argtypes = [ctypes.c_void_p]
+            va.vaTerminate.argtypes = [ctypes.c_void_p]
+            maj, mnr = ctypes.c_int(), ctypes.c_int()
+            ok = va.vaInitialize(ctypes.c_void_p(dpy), ctypes.byref(maj), ctypes.byref(mnr)) == 0
+            vendor = (va.vaQueryVendorString(ctypes.c_void_p(dpy)) or b"").decode(errors="replace") if ok else ""
+            if ok:
+                va.vaTerminate(ctypes.c_void_p(dpy))
+            # nvidia-vaapi-driver / VDPAU wrappers are not reliable for browsers
+            if ok and not any(k in vendor.lower() for k in ("vdpau", "nvidia", "splitted")):
+                return True
+        finally:
+            os.close(fd)
+    return False
+
+
+# Chromium switches that turn VA-API video decode on under X11 and Wayland.
+# Several generations of feature names are listed on purpose: unknown names are
+# ignored, so the same set works across Chrome/Chromium/Edge/Brave versions.
+BROWSER_HW_FLAGS = ("--enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,"
+                    "VaapiVideoDecodeLinuxGL,VaapiVideoDecoder,VaapiIgnoreDriverChecks,AcceleratedVideoEncoder "
+                    "--disable-features=UseChromeOSDirectVideoDecoder --ignore-gpu-blocklist")
+BROWSER_DESKTOPS = ("google-chrome.desktop", "google-chrome-beta.desktop", "google-chrome-unstable.desktop",
+                    "chromium.desktop", "chromium-browser.desktop", "org.chromium.Chromium.desktop",
+                    "com.google.Chrome.desktop", "microsoft-edge.desktop", "com.microsoft.Edge.desktop",
+                    "brave-browser.desktop", "com.brave.Browser.desktop", "vivaldi-stable.desktop")
+BROWSER_BINS = ("chrome", "chromium", "chromium-browser", "msedge", "brave", "vivaldi-bin")
+
+
+class BrowserHwVideo(Tweak):
+    """Chromium-family browsers on Linux decode video in software unless VA-API
+    is switched on by command-line switches. Reference laptop, YouTube 1080p on
+    battery at 30 % brightness: 17.8 W -> 10.0 W (SoC 10.6 -> 5.1 W)."""
+    id = "browser_hw_video"
+    title = T("Hardware video decoding in Chromium browsers", "Chromium 系浏览器硬件视频解码")
+    desc = T("Adds the VA-API switches to Chrome / Chromium / Edge / Brave launchers (user desktop-file "
+             "overrides and *-flags.conf) so videos are decoded by the GPU's video engine instead of the CPU. "
+             "Reference laptop, YouTube on battery: 17.8 W -> 10.0 W. Takes effect after restarting the browser.",
+             "给 Chrome / Chromium / Edge / Brave 的启动项（用户级 desktop 覆盖文件和 *-flags.conf）加上 VA-API 开关，"
+             "视频改由 GPU 的视频引擎解码而不是 CPU。参考机电池下播放 YouTube：17.8W→10.0W。重启浏览器后生效。")
+    group = "apps"
+    default = True
+    periodic = False
+    risk = T("On rare driver bugs videos may stutter or show artifacts; turn off and restart the browser.",
+             "个别驱动有 bug 时视频可能卡顿或花屏；关闭此项并重启浏览器即可。")
+    APP_DIRS = ("/usr/share/applications", "/usr/local/share/applications",
+                "/var/lib/flatpak/exports/share/applications")
+    MARK = "# endura: browser_hw_video"
+
+    def _home(self):
+        return user_home()
+
+    def _user_uid(self):
+        return desktop_user()[1]
+
+    def _targets(self):
+        """(source desktop file, user override path) for installed browsers."""
+        h = self._home()
+        if not h:
+            return []
+        dirs = list(self.APP_DIRS) + [str(h / ".local/share/flatpak/exports/share/applications")]
+        out = []
+        for name in BROWSER_DESKTOPS:
+            src = next((Path(d) / name for d in dirs if (Path(d) / name).exists()), None)
+            user = h / ".local/share/applications" / name
+            if src or user.exists():
+                out.append((src, user))
+        return out
+
+    def available(self):
+        return bool(self._targets()) and vaapi_usable()
+
+    @staticmethod
+    def _patch(text):
+        lines = []
+        for line in text.splitlines():
+            if line.startswith("Exec=") and "--enable-features=AcceleratedVideoDecodeLinuxGL" not in line:
+                cmd, sep, rest = line.partition(" %")
+                line = f"{cmd} {BROWSER_HW_FLAGS}" + (sep + rest if sep else "")
+            lines.append(line)
+        return "\n".join(lines) + "\n"
+
+    def _chown(self, p):
+        uid = self._user_uid()
+        if uid is not None:
+            try:
+                os.chown(p, uid, uid)
+            except OSError:
+                pass
+
+    def ensure(self, on_battery):
+        h = self._home()
+        if not h:
+            return
+        for src, user in self._targets():
+            base = user.read_text() if user.exists() else (src.read_text() if src else None)
+            if base is None or "AcceleratedVideoDecodeLinuxGL" in base:
+                continue
+            mf = ManagedFile(user)
+            mf.write(self._patch(base))
+            self._chown(user)
+        for conf in ("chrome-flags.conf", "chromium-flags.conf", "microsoft-edge-stable-flags.conf",
+                     "brave-flags.conf"):
+            p = h / ".config" / conf
+            old = read(p, "") or ""
+            if "AcceleratedVideoDecodeLinuxGL" not in old:
+                ManagedFile(p).write((old + "\n" if old else "") + self.MARK + "\n" +
+                                     BROWSER_HW_FLAGS.replace(" --", "\n--") + "\n")
+                self._chown(p)
+
+    def revert(self):
+        h = self._home()
+        if not h:
+            return
+        for _, user in self._targets():
+            ManagedFile(user).restore()
+        for conf in ("chrome-flags.conf", "chromium-flags.conf", "microsoft-edge-stable-flags.conf",
+                     "brave-flags.conf"):
+            ManagedFile(h / ".config" / conf).restore()
+
+    def status(self):
+        running = []
+        for pid in os.listdir("/proc"):
+            if pid.isdigit() and read(f"/proc/{pid}/comm") in BROWSER_BINS:
+                try:
+                    cmd = open(f"/proc/{pid}/cmdline", "rb").read()
+                except OSError:
+                    continue
+                if b"--type=" not in cmd:          # browser main process only
+                    running.append(b"AcceleratedVideoDecodeLinuxGL" in cmd)
+        patched = sum("AcceleratedVideoDecodeLinuxGL" in (read(u, "") or "") for _, u in self._targets())
+        detail = f"{patched} launcher(s) patched"
+        if running and not all(running):
+            detail += "; restart the browser to apply"
+        return {"active": patched > 0 and (not running or all(running)), "pending_reboot": False,
+                "detail": detail}
+
+
 class AcQuiet(Tweak):
     """On AC, laptops usually run their 'balanced'/'performance' platform profile
     with boost on: fans spin and the chassis gets warm even at light load.
@@ -1172,5 +1331,5 @@ def build(opts):
           AspmPolicy(opts), FsWriteback(opts), Sysctls(opts), TrimServices(opts),
           TrimRemoteDesktop(opts), ForkingTypeFix(opts), BackgroundTimerSlack(opts),
           BusyLoopWatchdog(opts), AppNap(opts), CrashLoopGuard(opts), BrowserEnergySaver(opts),
-          AcQuiet(opts)]
+          BrowserHwVideo(opts), AcQuiet(opts)]
     return {t.id: t for t in ts}
