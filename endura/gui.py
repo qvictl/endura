@@ -15,7 +15,7 @@ from .i18n import T, tr
 
 SOCK = "/run/endura/endura.sock"
 GROUPS = {"cpu": T("CPU", "CPU"), "firmware": T("Firmware / clock", "固件 / 时钟"),
-          "display": T("Display", "显示"), "audio": T("Audio", "音频"), "devices": T("Devices", "设备"),
+          "display": T("Display", "显示"), "thermal": T("Heat & fan", "发热与风扇"), "audio": T("Audio", "音频"), "devices": T("Devices", "设备"),
           "system": T("System", "系统"), "apps": T("Applications", "应用")}
 S = {
     "title": T("Endura · battery tuning", "Endura · 续航调优"),

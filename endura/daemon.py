@@ -58,13 +58,27 @@ class Daemon:
         return self.cfg["enabled"].get(t.id, t.default)
 
     # ----------------------------------------------------------- apply --
+    def quiet(self):
+        t = self.tweaks.get("ac_quiet")
+        return bool(t and self.is_available(t) and self.is_enabled(t))
+
+    def write_mode(self, bat):
+        mode = "battery" if bat else ("ac-quiet" if self.quiet() else "ac")
+        p = Path("/run/endura/mode")
+        if not p.exists() or p.read_text() != mode:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(mode)
+            os.chmod(p, 0o644)
+
     def apply_all(self, force=False):
         bat = on_battery()
-        changed_power = bat != self.last_bat
-        self.last_bat = bat
+        quiet = self.quiet()
+        changed_power = bat != self.last_bat or quiet != getattr(self, "last_quiet", None)
+        self.last_bat, self.last_quiet = bat, quiet
+        self.write_mode(bat)
         with self.lock:
             for t in self.tweaks.values():
-                if not t.available():
+                if not self.is_available(t):
                     continue
                 # reboot-scoped tweaks edit boot config: only on explicit user
                 # action (set_enabled), never re-asserted, so a firmware hang
@@ -77,11 +91,12 @@ class Daemon:
                     continue
                 try:
                     if self.is_enabled(t):
-                        if t.battery_only and not bat:
+                        eff = bat or (quiet and t.quiet_ac)   # quiet mode: AC acts like battery
+                        if t.battery_only and not eff:
                             if changed_power or force:
                                 t.revert()
                         else:
-                            t.ensure(bat)
+                            t.ensure(eff if t.quiet_ac else bat)
                     self.errors.pop(t.id, None)
                 except Exception as e:  # keep the loop alive
                     self.errors[t.id] = str(e)
@@ -90,14 +105,19 @@ class Daemon:
     def set_enabled(self, tid, on):
         t = self.tweaks[tid]
         self.status_cache.pop(tid, None)
+        self.__dict__.setdefault("avail_cache", {}).pop(tid, None)
         with self.lock:
             self.cfg["enabled"][tid] = bool(on)
             self.save_cfg()
             if on:
-                if not (t.battery_only and not on_battery()):
-                    t.ensure(on_battery())
+                bat = on_battery()
+                eff = bat or (self.quiet() and t.quiet_ac)
+                if not (t.battery_only and not eff):
+                    t.ensure(eff if t.quiet_ac else bat)
             else:
                 t.revert()
+        if tid == "ac_quiet":
+            self.apply_all(force=True)     # re-evaluate every quiet-capable tweak
 
     def set_option(self, key, value):
         with self.lock:
@@ -170,6 +190,7 @@ class Daemon:
         out = []
         for t in self.tweaks.values():
             d = t.info()
+            d["available"] = self.is_available(t)
             d["enabled"] = self.is_enabled(t)
             try:
                 d.update(self.cached_status(t) if d["available"] else {})
@@ -180,6 +201,16 @@ class Daemon:
             out.append(d)
         opts = {k: self.cfg["options"].get(k) for k in ("battery_epp", "battery_boost", "abm_level")}
         return {"tweaks": out, "options": opts, "now": self.rec.last}
+
+    def is_available(self, t, ttl=300):
+        """available() probes spawn processes (systemctl show, command -v ...);
+        cache them so a GUI polling every 5 s does not hammer PID 1 / D-Bus."""
+        cache = self.__dict__.setdefault("avail_cache", {})
+        ts, v = cache.get(t.id, (0, None))
+        if v is None or time.monotonic() - ts > ttl:
+            v = bool(t.available())
+            cache[t.id] = (time.monotonic(), v)
+        return v
 
     def cached_status(self, t):
         """Status of tweaks that spawn processes (systemctl, grub2-editenv) is
@@ -214,7 +245,7 @@ class Daemon:
             return self.probe
         if op == "revert_all":
             for t in self.tweaks.values():
-                if t.available() and self.is_enabled(t):
+                if self.is_available(t) and self.is_enabled(t):
                     self.set_enabled(t.id, False)
             return self.status()
         return {"error": f"unknown op {op}"}

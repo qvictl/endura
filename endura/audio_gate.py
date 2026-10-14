@@ -134,6 +134,13 @@ class Gate:
         self.last_loud = time.monotonic()
 
     def step(self):
+        # During a call (something records) nothing would be parked anyway: drop
+        # the level monitor and poll rarely, so the gate costs nothing in meetings.
+        if self.mic_active() and not self.parked:
+            self.watch(None)
+            self.last_loud = time.monotonic()
+            time.sleep(5)
+            return
         null = self.null_sink()
         streams = self.streams()
         alive = {si.index for si in streams}

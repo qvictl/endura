@@ -37,8 +37,13 @@ BUS = "io.github.Endura.Nap"
 
 
 def on_battery():
-    from .hw import on_battery as ob
-    return ob()
+    """True when App Nap should run: on battery, or on AC with quiet mode on
+    (endurad writes /run/endura/mode)."""
+    try:
+        return Path("/run/endura/mode").read_text().strip() in ("battery", "ac-quiet")
+    except OSError:
+        from .hw import on_battery as ob
+        return ob()
 
 
 def app_cgroups(app):

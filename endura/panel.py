@@ -74,12 +74,16 @@ def show():
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
-    if cmd == "hide":
-        print(hide())
-    elif cmd == "show":
-        print(show())
-    else:
-        print("hidden" if STATE.exists() else "shown")
+    try:
+        if cmd == "hide":
+            print(hide())
+        elif cmd == "show":
+            print(show())
+        else:
+            print("hidden" if STATE.exists() else "shown")
+    except Exception as e:                      # report, do not crash (no ABRT dumps)
+        print(f"endura.panel {cmd}: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

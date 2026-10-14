@@ -29,6 +29,7 @@ at **4.4 W with the screen on at 30 %** (≈ 22 h on its 99 Wh battery) while st
 | **Hide Plasma panel system monitors** (battery) | the panel's CPU/net/disk graphs repainted the screen ~55×/s so PSR never engaged | static screen: 55 → 0 display flips/s |
 | **Adaptive timer slack** | daemons polling on 10 ms timers get 500 ms slack (remote-desktop tools) or 50 ms (others); events still wake them instantly; restored within ~10 s when a remote session starts | Sunlogin 586 → 16 wakeups/s, ToDesk 608 → 104 |
 | **Coalesce disk writes** (battery) | btrfs/ext4 `commit=120,noatime`, 60 s dirty expiry (runtime remount, fstab untouched) | NVMe writes 3443 → 1541 per minute |
+| **Quiet & cool mode on AC** | on AC: firmware low-power profile, responsive EPP with boost off, App Nap / timer slack / device PM kept on, ideapad fan "super silent" where available | light load: peak 55.8 → 42 °C vs. a typical balanced+boost setup; 8 threads × 50 % for 5 min: max 56.8 °C, fan never started; UI bursts *faster* than balanced+boost (10 ms task p90 14–15 ms vs 22–25 ms) |
 | **Busy-loop watchdog** | notifies when an app wakes the CPU >1500×/s for 3 min | caught a chat-app backend at ~3000 wakeups/s costing **~4 W** |
 | **Crash-loop guard** | stops services restarting >20× in 10 min | caught an updater with a broken npm dependency after 1286 restarts |
 | **Vendor unit fix** | units declared `Type=forking` that never fork (start timeout → restart forever) | a remote-desktop daemon had restarted 113× |

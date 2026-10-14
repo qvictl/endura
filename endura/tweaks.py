@@ -33,6 +33,7 @@ class Tweak:
     default = False
     risk = None             # caveat shown in the GUI
     periodic = True         # re-assert every cycle (cheap sysfs writes only)
+    quiet_ac = False        # with "AC quiet mode" on, also applied while on AC
 
     def __init__(self, opts=None):
         self.opts = opts if opts is not None else {}
@@ -57,7 +58,6 @@ class Tweak:
         d = {k: getattr(self, k) for k in
              ("id", "title", "desc", "group", "reboot", "battery_only", "default", "risk")}
         d["fmt"] = self.fmt()
-        d["available"] = self.available()
         return d
 
 
@@ -100,15 +100,16 @@ def _boost_paths():
 
 
 class CpuPolicy(Tweak):
+    quiet_ac = True
     """power-saver profiles usually set EPP=power, which keeps cores near their
     lowest P-state: UI work takes 3-4x longer and, by not racing to idle,
     often costs *more* energy. Use a responsive EPP with boost off instead."""
     id = "cpu_policy"
     title = T("Responsive CPU policy (battery)", "响应式 CPU 策略（电池）")
-    desc = T("On battery: EPP {epp}, turbo/boost {boost}, no max-frequency cap. "
+    desc = T("On battery: EPP {epp}, turbo/boost {boost}, no max-frequency cap, firmware low-power profile. "
              "Replaces EPP=power, which made a 10 ms UI burst take 34.5 ms instead of 13.3 ms "
              "and still drew ~2 W more on the reference laptop.",
-             "电池模式下 EPP 用 {epp}、睿频 {boost}、取消最高频率限制。替代 EPP=power"
+             "电池模式下 EPP 用 {epp}、睿频 {boost}、取消最高频率限制、固件 low-power 档。替代 EPP=power"
              "（参考机上 10ms 的 UI 任务要 34.5ms，且整机反而多耗约 2W）。")
     group = "cpu"
     battery_only = True
@@ -138,6 +139,12 @@ class CpuPolicy(Tweak):
         for p in paths:
             if read(p) != want:
                 write(p, want)
+        # firmware profile: lower package limits / gentler fan curve
+        pp = "/sys/firmware/acpi/platform_profile"
+        choices = (read(pp + "_choices", "") or "").split()
+        prof = next((c for c in ("low-power", "quiet", "cool") if c in choices), None)
+        if prof and read(pp) != prof:
+            write(pp, prof)
 
     def revert(self):
         # power-profiles-daemon / tuned re-apply their own profile on restart
@@ -162,12 +169,11 @@ class StopUnits(Tweak):
         return STATE_DIR / f"{self.id}.json"
 
     def _present(self):
-        out = []
-        for s in self.units:
-            rc, o = run(["systemctl", "show", "-p", "LoadState", "--value", s])
-            if o.strip() == "loaded":
-                out.append(s)
-        return out
+        # list-unit-files reads the unit search path without loading units into
+        # PID 1 (systemctl show/status would load and later GC each one)
+        rc, o = run(["systemctl", "list-unit-files", "--no-legend", "--plain", *self.units])
+        found = {l.split()[0] for l in o.splitlines() if l.strip()}
+        return [u for u in self.units if u in found]
 
     def available(self):
         return bool(self._present())
@@ -178,11 +184,15 @@ class StopUnits(Tweak):
         except (OSError, ValueError):
             orig = {}
         dirty = False
+        rc, lu = run(["systemctl", "list-units", "--all", "--no-legend", "--plain", *self.units])
+        running = {l.split()[0] for l in lu.splitlines() if len(l.split()) > 2 and l.split()[2] == "active"}
+        rc, uf = run(["systemctl", "list-unit-files", "--no-legend", "--plain", *self.units])
+        states = {l.split()[0]: l.split()[1] for l in uf.splitlines() if len(l.split()) > 1}
         for s in self._present():
-            rc, en = run(["systemctl", "is-enabled", s])
-            active = run(["systemctl", "is-active", "--quiet", s])[0] == 0
-            if en.strip() == "enabled" or active:
-                orig.setdefault(s, en.strip())
+            en = states.get(s, "")
+            active = s in running
+            if en == "enabled" or active:
+                orig.setdefault(s, en)
                 run(["systemctl", "disable", "--now", s])
                 dirty = True
         if dirty:
@@ -199,7 +209,11 @@ class StopUnits(Tweak):
         self.store.unlink(missing_ok=True)
 
     def status(self):
-        act = [s for s in self._present() if run(["systemctl", "is-active", "--quiet", s])[0] == 0]
+        present = self._present()
+        # list-units only reports units PID 1 already has loaded (no load side
+        # effect); a unit that is not loaded cannot be running
+        rc, o = run(["systemctl", "list-units", "--all", "--no-legend", "--plain", *present]) if present else (0, "")
+        act = [l.split()[0] for l in o.splitlines() if len(l.split()) > 2 and l.split()[2] == "active"]
         return {"active": not act, "pending_reboot": False,
                 "detail": ("running: " + ", ".join(act)) if act else "stopped"}
 
@@ -423,24 +437,46 @@ class PanelMonitorsOnBattery(Tweak):
              "面板上的 CPU/内存/网络/磁盘图表让屏幕每秒重绘 40~55 次，面板自刷新（PSR）无法生效。"
              "拔电时自动隐藏，插电时原位恢复（恢复时面板会闪约 2 秒）。")
     group = "display"
-    battery_only = True
     default = True
+    # not battery_only: it must also *restore* on AC every cycle, e.g. after
+    # booting on AC with the widgets still hidden from the last battery session
+    # (the daemon starts before the desktop, so a one-shot restore finds no session).
 
     def _state(self):
         h = user_home()
         return h / ".local/state/endura/panel-widgets.json" if h else None
 
     def available(self):
+        return run(["pgrep", "-x", "plasmashell"])[0] == 0 or bool(
+            glob.glob("/home/*/.local/state/endura/panel-widgets.json"))
+
+    def _shell_up(self):
         return run(["pgrep", "-x", "plasmashell"])[0] == 0
 
+    fails = 0
+    next_try = 0.0
+
     def _run(self, action):
+        import logging
         c = user_cmd(["env", "PYTHONPATH=/usr/lib/endura:/usr/lib/endura/vendor", "python3", "-m", "endura.panel", action])
-        return run(c, timeout=90) if c else (1, "no desktop user")
+        if not c:
+            return 1, "no desktop user"
+        import subprocess
+        p = subprocess.run(c, capture_output=True, text=True, timeout=120)
+        if p.returncode:
+            # exponential back-off (30 s .. 30 min) instead of retrying every cycle
+            self.fails += 1
+            self.next_try = time.monotonic() + min(1800, 30 * 2 ** self.fails)
+            logging.getLogger("endurad").warning("panel %s failed (%d): %s", action, self.fails,
+                                                 (p.stderr or p.stdout).strip().splitlines()[-1:] )
+        else:
+            self.fails = 0
+        return p.returncode, p.stdout
 
     def ensure(self, on_battery):
         st = self._state()
-        if st is None:
-            return
+        if st is None or not self._shell_up() or time.monotonic() < self.next_try:
+            return                                  # retried next cycle (30 s)
         if on_battery and not st.exists():
             self._run("hide")
         elif not on_battery and st.exists():
@@ -448,20 +484,21 @@ class PanelMonitorsOnBattery(Tweak):
 
     def revert(self):
         st = self._state()
-        if st is not None and st.exists():
+        if st is not None and st.exists() and self._shell_up():
             self._run("show")
 
     def status(self):
         st = self._state()
         if st is None:
             return {"active": False, "pending_reboot": False, "detail": "no graphical session"}
-        return {"active": st.exists(), "pending_reboot": False,
+        return {"active": True, "pending_reboot": False,
                 "detail": "hidden (restored on AC)" if st.exists() else "shown"}
 
 
 # ------------------------------------------------------------ devices ---
 
 class PciRuntimePm(Tweak):
+    quiet_ac = True
     id = "pci_runtime_pm"
     title = T("PCI runtime power management", "PCI 设备运行时电源管理")
     desc = T("Lets idle PCI devices (card reader, unplugged Ethernet, ...) runtime-suspend.",
@@ -508,6 +545,7 @@ class PciRuntimePm(Tweak):
 
 
 class AspmPolicy(Tweak):
+    quiet_ac = True
     id = "aspm_powersupersave"
     title = T("PCIe ASPM powersupersave (battery)", "PCIe ASPM powersupersave（电池）")
     desc = T("Enables PCIe L1 substates (L1.1/L1.2) so idle links draw almost nothing.",
@@ -703,6 +741,7 @@ class ForkingTypeFix(Tweak):
 
 
 class BackgroundTimerSlack(Tweak):
+    quiet_ac = True
     """Timer slack lets the kernel defer a thread's timer expiry so it coalesces
     with other wakeups; fd/event wakeups stay instant. Remote-desktop daemons
     that poll every 10 ms get a deep slack, dropped within ~10 s when they start
@@ -906,6 +945,7 @@ class AudioGate(UserService):
 
 
 class AppNap(UserService):
+    quiet_ac = True
     id = "app_nap"
     unit = "endura-nap.service"
     title = T("App Nap for background / idle apps (battery)", "App Nap：后台/空闲应用间歇运行（电池）")
@@ -1011,6 +1051,88 @@ class CrashLoopGuard(Tweak):
                 "detail": "stopped: " + "; ".join(f"{u} ({r})" for (_, u), r in self.stopped.items())}
 
 
+class AcQuiet(Tweak):
+    """On AC, laptops usually run their 'balanced'/'performance' platform profile
+    with boost on: fans spin and the chassis gets warm even at light load.
+    This keeps the battery-side load reductions on AC too and asks the firmware
+    for its quiet/low-power profile (lower package power limits and a gentler
+    fan curve on Lenovo, ASUS, HP, Dell...), plus the ideapad 'super silent'
+    fan mode where the driver offers it."""
+    id = "ac_quiet"
+    title = T("Quiet & cool mode on AC", "插电静音 / 低温模式")
+    desc = T("On AC: firmware platform profile '{profile}', responsive CPU policy with boost off, App Nap, "
+             "timer slack and device power management stay on, and the ideapad fan mode is set to "
+             "super-silent where supported. Less heat and fan noise; UI stays within the smoothness criterion.",
+             "插电时：平台性能档切到 '{profile}'，继续使用响应式 CPU 策略并关闭睿频，App Nap、timer slack、设备省电保持开启；"
+             "支持的机型将风扇设为超静音。发热和风扇噪音更低，UI 仍满足流畅度标准。")
+    group = "thermal"
+    battery_only = False
+    PP = "/sys/firmware/acpi/platform_profile"
+    STORE = STATE_DIR / "ac_quiet.json"
+
+    def _choices(self):
+        return (read(f"{self.PP}_choices", "") or "").split()
+
+    def _profile(self):
+        ch = self._choices()
+        for p in ("quiet", "low-power", "cool"):
+            if p in ch:
+                return p
+        return None
+
+    def _fan_mode(self):
+        g = glob.glob("/sys/bus/platform/devices/VPC2004:*/fan_mode")
+        return g[0] if g else None
+
+    def fmt(self):
+        return {"profile": self._profile() or "n/a"}
+
+    def available(self):
+        return bool(self._profile()) or self._fan_mode() is not None
+
+    def _remember(self, key, value):
+        try:
+            st = json.loads(self.STORE.read_text())
+        except (OSError, ValueError):
+            st = {}
+        if key not in st:
+            st[key] = value
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            self.STORE.write_text(json.dumps(st))
+
+    def ensure(self, on_battery):
+        if on_battery:
+            return          # battery side is handled by power-profiles-daemon / other tweaks
+        prof = self._profile()
+        if prof and read(self.PP) != prof:
+            self._remember("platform_profile", read(self.PP))
+            write(self.PP, prof)
+        fm = self._fan_mode()
+        if fm and read(fm) not in ("0", None):
+            self._remember("fan_mode", read(fm))
+            write(fm, "0")
+
+    def revert(self):
+        try:
+            st = json.loads(self.STORE.read_text())
+        except (OSError, ValueError):
+            st = {}
+        if st.get("platform_profile"):
+            write(self.PP, st["platform_profile"])
+        fm = self._fan_mode()
+        if fm and st.get("fan_mode") is not None:
+            write(fm, st["fan_mode"])
+        self.STORE.unlink(missing_ok=True)
+        run(["systemctl", "try-restart", "power-profiles-daemon", "tuned"])
+
+    def status(self):
+        fm = self._fan_mode()
+        parts = [f"platform_profile={read(self.PP)}"]
+        if fm:
+            parts.append(f"fan_mode={read(fm)}")
+        return {"active": read(self.PP) == self._profile(), "pending_reboot": False, "detail": ", ".join(parts)}
+
+
 class BrowserEnergySaver(Tweak):
     id = "browser_energy_saver"
     title = T("Chrome/Chromium energy saver on battery", "Chrome/Chromium 拔电时省电模式")
@@ -1049,5 +1171,6 @@ def build(opts):
           PanelMonitorsOnBattery(opts), PanelPowerSavings(opts), AudioGate(opts), PciRuntimePm(opts),
           AspmPolicy(opts), FsWriteback(opts), Sysctls(opts), TrimServices(opts),
           TrimRemoteDesktop(opts), ForkingTypeFix(opts), BackgroundTimerSlack(opts),
-          BusyLoopWatchdog(opts), AppNap(opts), CrashLoopGuard(opts), BrowserEnergySaver(opts)]
+          BusyLoopWatchdog(opts), AppNap(opts), CrashLoopGuard(opts), BrowserEnergySaver(opts),
+          AcQuiet(opts)]
     return {t.id: t for t in ts}
