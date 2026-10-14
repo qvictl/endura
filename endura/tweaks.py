@@ -234,6 +234,19 @@ class NoFreqCappers(StopUnits):
 # ------------------------------------------------------------ clock -----
 
 TSCSYNC_SET_MODE = "/usr/libexec/endura/tscsync-set-mode"
+SLEEP_HOOK = "/usr/lib/systemd/system-sleep/endura-tscsync"
+SLEEP_HOOK_BODY = """#!/bin/sh
+# Installed by Endura (tsc_sync). GRUB runs tscsync on the boot that resumes
+# from hibernation and arms its hang guard, but tscsync-report.service does not
+# run again in the resumed system, so the next cold boot would disable tscsync.
+# Clear the guard after every resume from hibernation.
+[ "$1" = post ] || exit 0
+case "$2" in
+  hibernate|hybrid-sleep|suspend-then-hibernate)
+    [ -x /usr/local/libexec/tscsync-report ] && /usr/local/libexec/tscsync-report >/dev/null 2>&1 ;;
+esac
+exit 0
+"""
 
 
 class TscSync(Tweak):
@@ -272,19 +285,34 @@ class TscSync(Tweak):
             return "off"
         return env.get("tscsync_mode", "mode=measure").split("=", 1)[-1]
 
+    @staticmethod
+    def install_hook():
+        if read(SLEEP_HOOK) != SLEEP_HOOK_BODY.strip():
+            Path(SLEEP_HOOK).parent.mkdir(parents=True, exist_ok=True)
+            Path(SLEEP_HOOK).write_text(SLEEP_HOOK_BODY)
+            os.chmod(SLEEP_HOOK, 0o755)
+            run(["restorecon", SLEEP_HOOK])
+
     def ensure(self, on_battery):
+        self.install_hook()
         if self._mode() != "sync":
             run([TSCSYNC_SET_MODE, "sync"])
 
     def revert(self):
+        Path(SLEEP_HOOK).unlink(missing_ok=True)
         if self._mode() != "off":
             run([TSCSYNC_SET_MODE, "off"])
 
     def status(self):
         cs = read("/sys/devices/system/clocksource/clocksource0/current_clocksource")
         mode = self._mode()
-        return {"active": cs == "tsc", "pending_reboot": (mode == "sync") != (cs == "tsc"),
-                "detail": f"clocksource={cs}, tscsync={mode}"}
+        d = {"active": cs == "tsc", "pending_reboot": (mode == "sync") != (cs == "tsc"),
+             "detail": f"clocksource={cs}, tscsync={mode}"}
+        if mode == "off" and cs != "tsc":
+            # enabled here but off in GRUB: the hang guard tripped on a failed boot
+            d["alert"] = True
+            d["detail"] += " (disabled by tscsync's hang guard after a boot that did not reach Linux; re-enable to retry)"
+        return d
 
 
 # ---------------------------------------------------------- display -----

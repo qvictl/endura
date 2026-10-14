@@ -307,6 +307,12 @@ class Daemon:
         from .inputwatch import InputWatcher
         InputWatcher().start()
         self.apply_all(force=True)
+        t = self.tweaks.get("tsc_sync")
+        if t and self.is_available(t) and self.is_enabled(t):
+            try:
+                t.install_hook()          # keep the resume-from-hibernation hook in place
+            except OSError:
+                pass
         self.rec.tick_fast()
         self.rec.flush()          # so clients have data right away
         # 5 s loop: power_supply reads are ACPI EC transactions, so keep them rare

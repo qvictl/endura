@@ -175,7 +175,7 @@ def uninstall():
         s.makefile().readline()
         print("all tweaks reverted")
     sh("systemctl", "disable", "--now", "endurad", check=False)
-    for p in (LIB, LIBEXEC, "/usr/bin/endura-gui", "/etc/systemd/system/endurad.service",
+    for p in (LIB, LIBEXEC, "/usr/bin/endura-gui", "/usr/lib/systemd/system-sleep/endura-tscsync", "/etc/systemd/system/endurad.service",
               "/etc/systemd/user/endura-audio-gate.service", "/etc/systemd/user/endura-nap.service",
               "/usr/share/kwin/scripts/endura-focus", "/usr/share/applications/io.github.endura.desktop"):
         p = Path(p)
