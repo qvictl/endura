@@ -13,6 +13,9 @@ OPTIONS = {
     "alert_ignore": [],          # app names never alerted about
     "battery_epp": "balance_performance",
     "battery_boost": False,
+    # EPP-less CPUs: keep original minimum unless a measured latency floor is requested.
+    "battery_governor": "schedutil",
+    "battery_min_freq_mhz": 0,
     "abm_level": 1,
     # timer slack: /proc/<pid>/comm names (max 15 chars)
     "slack_deep": ["sunloginclient", "oray_rundaemon", "ToDesk_Service", "ToDesk",

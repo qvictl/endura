@@ -126,6 +126,8 @@ class Daemon:
     SETTABLE = {
         "battery_epp": lambda v: v if v in ("power", "balance_power", "balance_performance", "performance") else None,
         "battery_boost": bool,
+        "battery_governor": lambda v: v if v in ("schedutil", "ondemand") else None,
+        "battery_min_freq_mhz": lambda v: min(10000, max(0, int(v))),
         "abm_level": lambda v: min(4, max(1, int(v))),
         "language": lambda v: v if v in ("auto", "en", "zh") else None,
         "budget_w": lambda v: min(200.0, max(0.0, round(float(v), 2))),
