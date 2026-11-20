@@ -117,18 +117,117 @@ class CpuPolicy(Tweak):
     battery_only = True
     default = True
 
-    def available(self):
+    STORE = STATE_DIR / "cpu_governors.json"
+
+    def _uses_epp(self):
         return os.path.exists(f"{CPU}/cpu0/cpufreq/energy_performance_preference")
+
+    def _policies(self):
+        return sorted(glob.glob(f"{CPU}/cpufreq/policy[0-9]*"))
+
+    @property
+    def governor(self):
+        return self.opts.get("battery_governor", "schedutil")
+
+    @property
+    def min_freq_mhz(self):
+        return max(0, int(self.opts.get("battery_min_freq_mhz", 0)))
+
+    def _governors(self):
+        return [f"{p}/scaling_governor" for p in self._policies()
+                if self.governor in (read(f"{p}/scaling_available_governors", "") or "").split()
+                and os.path.exists(f"{p}/scaling_governor")]
+
+    def _thresholds(self):
+        paths = [str(Path(p).parent / "ondemand/up_threshold") for p in self._governors()]
+        paths.append(f"{CPU}/cpufreq/ondemand/up_threshold")
+        return sorted({p for p in paths if os.path.exists(p)})
+
+    def available(self):
+        return self._uses_epp() or bool(self._governors())
 
     @property
     def epp(self):
         return self.opts.get("battery_epp", "balance_performance")
 
     def fmt(self):
-        return {"epp": self.epp, "boost": "on" if self.opts.get("battery_boost") else "off"}
+        choices = [(read(f"{p}/scaling_available_governors", "") or "").split()
+                   for p in self._policies()] if not self._uses_epp() else []
+        common = set.intersection(*(set(c) for c in choices)) if choices else set()
+        return {"epp": self.epp, "boost": "on" if self.opts.get("battery_boost") else "off",
+                "epp_available": self._uses_epp(), "governor": self.governor,
+                "min_mhz": self.min_freq_mhz,
+                "governors": sorted(common & {"schedutil", "ondemand"})}
+
+    def info(self):
+        d = super().info()
+        if not self._uses_epp():
+            d["title"] = T("CPU governor and responsiveness (battery)", "CPU 调频与响应策略（电池）")
+            d["desc"] = T("On battery: {governor}, minimum response frequency {min_mhz} MHz "
+                          "(0 keeps the original minimum). Maximum frequency is unchanged. Reverting "
+                          "restores the original governor, minimum frequency and any ondemand tuning.",
+                          "电池模式下使用 {governor}，最低响应频率 {min_mhz}MHz（0 保持原下限），最高频率不变。"
+                          "还原时恢复原调频策略、最低频率及 ondemand 参数。")
+            d["risk"] = T("A higher minimum can increase power draw; verify the Smoothness test and power. "
+                          "Ondemand can change energy-aware scheduling behaviour.",
+                          "提高最低频率可能增加功耗，请结合流畅度测试和功耗验证；ondemand 可能改变能效调度行为。")
+        return d
+
+    def _save_original(self, original):
+        if original:
+            self.STORE.parent.mkdir(parents=True, exist_ok=True)
+            self.STORE.write_text(json.dumps(original))
+        else:
+            self.STORE.unlink(missing_ok=True)
+
+    def _ensure_governors(self):
+        try:
+            original = json.loads(self.STORE.read_text())
+        except FileNotFoundError:
+            original = {}
+
+        def set_value(p, value):
+            current = read(p)
+            if current is None:
+                raise OSError(f"CPU control unavailable: {p}")
+            value = str(value)
+            if current == value:
+                return
+            if p not in original:
+                original[p] = current
+                self._save_original(original)
+            if not write(p, value):
+                raise OSError(f"cannot set CPU control: {p}")
+
+        # Restore governor-specific controls before switching away from it.
+        for p in list(original):
+            restore = (p.endswith("/up_threshold") and self.governor != "ondemand") or \
+                      (p.endswith("/scaling_min_freq") and not self.min_freq_mhz)
+            if restore and os.path.exists(p):
+                if not write(p, original[p]):
+                    raise OSError(f"cannot restore CPU control: {p}")
+                del original[p]
+                self._save_original(original)
+
+        for p in self._governors():
+            set_value(p, self.governor)
+            if self.min_freq_mhz:
+                minimum = str(Path(p).with_name("scaling_min_freq"))
+                base = int(original.get(minimum, read(minimum)))
+                maximum = int(read(Path(p).with_name("scaling_max_freq")))
+                set_value(minimum, min(maximum, max(base, self.min_freq_mhz * 1000)))
+        if self.governor == "ondemand":
+            thresholds = self._thresholds()
+            if not thresholds:
+                raise OSError("ondemand up_threshold is unavailable")
+            for p in thresholds:
+                set_value(p, "25")
 
     def ensure(self, on_battery):
         if not on_battery:
+            return
+        if not self._uses_epp():
+            self._ensure_governors()
             return
         for c in glob.glob(f"{CPU}/cpu[0-9]*/cpufreq"):
             if read(f"{c}/energy_performance_preference") not in (None, self.epp):
@@ -149,10 +248,38 @@ class CpuPolicy(Tweak):
             write(pp, prof)
 
     def revert(self):
+        if not self._uses_epp():
+            try:
+                original = json.loads(self.STORE.read_text())
+            except FileNotFoundError:
+                return
+            pending = {}
+            # An ondemand directory can disappear once its governor is stopped.
+            for p, value in sorted(original.items(), key=lambda item: item[0].endswith("/scaling_governor")):
+                if not os.path.exists(p):
+                    pending[p] = value
+                elif not write(p, value):
+                    raise OSError(f"cannot restore CPU control: {p}")
+            self._save_original(pending)
+            return
         # power-profiles-daemon / tuned re-apply their own profile on restart
         run(["systemctl", "try-restart", "power-profiles-daemon", "tuned"])
 
     def status(self):
+        if not self._uses_epp():
+            paths = self._governors()
+            active = bool(paths) and all(read(p) == self.governor for p in paths)
+            if self.min_freq_mhz:
+                active = active and all(int(read(Path(p).with_name("scaling_min_freq")) or 0) >=
+                                        min(self.min_freq_mhz * 1000,
+                                            int(read(Path(p).with_name("scaling_max_freq")) or 0)) for p in paths)
+            if self.governor == "ondemand":
+                thresholds = self._thresholds()
+                active = active and bool(thresholds) and all(read(p) == "25" for p in thresholds)
+            return {"active": active, "pending_reboot": False,
+                    "detail": "; ".join(f"{Path(p).parent.name}: {read(Path(p).with_name('scaling_driver'))} "
+                                        f"governor={read(p)} min={int(read(Path(p).with_name('scaling_min_freq')) or 0)//1000}MHz"
+                                        for p in paths)}
         e = read(f"{CPU}/cpu0/cpufreq/energy_performance_preference")
         paths, on, _ = _boost_paths()
         b = ("on" if read(paths[0]) == on else "off") if paths else "n/a"
@@ -667,19 +794,28 @@ class Sysctls(Tweak):
     default = True
     VALUES = {"kernel/nmi_watchdog": ("0", "1"), "vm/dirty_writeback_centisecs": ("1500", "500")}
 
+    ROOT = "/proc/sys"
+
+    def _values(self):
+        return {k: v for k, v in self.VALUES.items() if os.path.exists(f"{self.ROOT}/{k}")}
+
+    def available(self):
+        return bool(self._values())
+
     def ensure(self, on_battery):
-        for k, (on, _) in self.VALUES.items():
-            if os.path.exists(f"/proc/sys/{k}") and read(f"/proc/sys/{k}") != on:
-                write(f"/proc/sys/{k}", on)
+        for k, (on, _) in self._values().items():
+            if os.path.exists(f"{self.ROOT}/{k}") and read(f"{self.ROOT}/{k}") != on:
+                write(f"{self.ROOT}/{k}", on)
 
     def revert(self):
-        for k, (_, off) in self.VALUES.items():
-            write(f"/proc/sys/{k}", off)
+        for k, (_, off) in self._values().items():
+            write(f"{self.ROOT}/{k}", off)
 
     def status(self):
-        ok = all(read(f"/proc/sys/{k}") == on for k, (on, _) in self.VALUES.items())
+        values = self._values()
+        ok = bool(values) and all(read(f"{self.ROOT}/{k}") == on for k, (on, _) in values.items())
         return {"active": ok, "pending_reboot": False,
-                "detail": ", ".join(f"{k.split('/')[-1]}={read('/proc/sys/' + k)}" for k in self.VALUES)}
+                "detail": ", ".join(f"{k.split('/')[-1]}={read(self.ROOT + '/' + k)}" for k in values)}
 
 
 class TrimServices(StopUnits):

@@ -67,6 +67,17 @@ Endura 由一个 root 守护进程、两个用户级代理和一个 PyQt6 图形
 * 支持最完整：AMD Ryzen APU（SoC 功耗遥测、amdgpu PSR、TSC 修复）和 KDE Plasma 6 Wayland
   （App Nap 的焦点跟踪、隐藏面板监视器）。通用项在 Intel 和其他桌面同样可用；硬件不具备的项会显示为"不可用"。
 
+## ARM64 支持
+
+不提供 EPP 的机器可选择驱动支持的 `schedutil` 或 `ondemand`，设置页会显示调频策略和
+最低响应频率。默认保持 `schedutil` 和原最低频率；最高频率不变。最低响应频率设为 0 可撤销
+频率下限调节，关闭 CPU 策略会恢复原 governor、最低频率和修改过的 ondemand 参数。
+提高频率下限可能增加功耗，需要结合“流畅度”与电池功耗实测选择。
+
+ARM 上不存在的 NMI watchdog 不再导致其他已生效的内核参数显示失败。
+AMD TSC、amdgpu PSR/ABM 等需要相应硬件，不会用改变显示质量或修改设备树替代。
+完整条目、接口限制、已有功能的体验风险和验证方式见 [ARM64 盘点](docs/arm64.md)。
+
 ## 已实测的发行版
 
 `endura-install` 按发行版解析依赖：能用系统包的用系统包，系统没有的装进 `/usr/lib/endura/vendor`

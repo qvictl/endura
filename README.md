@@ -75,6 +75,20 @@ criterion, checked by `endura-bench`:
   on Wayland (focus tracking for App Nap, panel monitor hiding). Generic tweaks work on Intel
   and other desktops; tweaks whose hardware is missing show as *not available*.
 
+## ARM64 support
+
+On CPUs without EPP, Settings exposes supported `schedutil`/`ondemand` governors
+and an optional minimum response frequency. Defaults keep `schedutil` and the
+original minimum; the maximum is unchanged. Setting the minimum to zero restores
+its original value. Disabling the CPU policy restores the original governor,
+minimum and any ondemand tuning. A higher minimum may increase power draw: use
+the Smoothness test and battery measurements to choose it.
+
+A missing ARM NMI watchdog no longer makes an applied writeback control appear
+inactive. AMD TSC/amdgpu features still require their hardware. See the
+[ARM64 inventory and validation notes](docs/arm64.md) for platform limits and
+existing features' latency, audio and wakeup tradeoffs.
+
 ## Tested distributions
 
 `endura-install` resolves dependencies per distribution, installs what is packaged, vendors
